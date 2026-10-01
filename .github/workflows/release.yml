@@ -1,4 +1,4 @@
-# 发布 Release 后自动构建六平台二进制并上传到该 Release。
+# 发布 Release 后自动构建六平台二进制上传到该 Release,并推送多架构容器镜像到 ghcr.io。
 # Trigger: 在 GitHub 上发布(或编辑重发)一个 Release,或手动 workflow_dispatch。
 name: release
 
@@ -87,3 +87,53 @@ jobs:
           echo "上传以下资产到 Release ${TAG}:"
           ls -lh dist/
           gh release upload "${TAG}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
+
+  image:
+    name: build & push container image
+    runs-on: ubuntu-latest
+    permissions:
+      # job 级覆盖:镜像推送只需读代码 + 写包仓库。
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image name and version
+        run: |
+          # ghcr 镜像名必须全小写(仓库名含大写 LinuxSuRen)。
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (linux/amd64, linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### 容器镜像已发布" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '- `${{ env.IMAGE }}:${{ env.VERSION }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- `${{ env.IMAGE }}:latest`' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "拉取: \`docker pull ${{ env.IMAGE }}:${{ env.VERSION }}\`" >> "$GITHUB_STEP_SUMMARY"

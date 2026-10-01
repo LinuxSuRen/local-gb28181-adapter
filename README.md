@@ -148,13 +148,23 @@ RTP 按 1400 字节切片（PT 96、y= 行 SSRC）。CRC-32/MPEG 与时间戳编
 
 ## 发布
 
-发布通过 GitHub Release 驱动（与 local-onvif-adapter 相同流程）：
+发布通过 GitHub Release 驱动，**二进制与容器镜像一次发布**：
 
 1. 打 tag 并推送：`git tag v0.1.0 && git push origin v0.1.0`
 2. 在 GitHub Releases 页面基于该 tag 创建并发布 Release（`release` workflow 自动触发）
-3. workflow 自动完成：构建前端 → 六平台交叉编译（linux/darwin/windows × amd64/arm64）
-   → 打包 tar.gz / zip → 生成 `checksums.txt` → 上传到该 Release
+3. workflow 自动完成：
+   - **二进制**：构建前端 → 六平台交叉编译（linux/darwin/windows × amd64/arm64）
+     → 打包 tar.gz / zip → 生成 `checksums.txt` → 上传到该 Release
+   - **容器镜像**：buildx 多架构构建（linux/amd64 + linux/arm64）→ 推送
+     `ghcr.io/linuxsuren/local-gb28181-adapter:<版本>` 与 `:latest`（GITHUB_TOKEN 认证，无需额外 secret）
 4. 产物缺失时可在 Actions 页面手动 `workflow_dispatch` 指定 tag 补传（`--clobber` 覆盖）
+
+发布后拉取镜像：
+
+```bash
+docker pull ghcr.io/linuxsuren/local-gb28181-adapter:latest
+docker run -d --network host -v ./data:/data ghcr.io/linuxsuren/local-gb28181-adapter:latest
+```
 
 本地验证发布配置：`make snapshot`（需要 goreleaser，不打 tag、不上传）。
 
