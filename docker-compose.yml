@@ -1,0 +1,17 @@
+services:
+  local-gb28181-adapter:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: local-gb28181-adapter:latest
+    container_name: local-gb28181-adapter
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --data-dir=/data
+    volumes:
+      - ./data:/data
+      # Linux 下接入本地 USB 摄像头（按需取消注释，可映射多个）：
+      # - /dev/video0:/dev/video0
+      # - /dev/video1:/dev/video1

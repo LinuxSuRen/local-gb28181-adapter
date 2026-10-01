@@ -1,0 +1,49 @@
+version: 2
+
+project_name: local-gb28181-adapter
+
+# 二进制内嵌 web/dist，发布前必须先构建前端。
+before:
+  hooks:
+    - go mod tidy
+    - cd web && npm ci && npm run build
+
+builds:
+  - id: local-gb28181-adapter
+    main: ./cmd/local-gb28181-adapter
+    binary: local-gb28181-adapter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .Date }}
+
+archives:
+  - id: default
+    builds:
+      - local-gb28181-adapter
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
