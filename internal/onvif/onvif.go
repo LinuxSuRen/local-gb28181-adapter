@@ -57,6 +57,35 @@ func (s *Server) SetEndpoints(baseURL string, rtspPort int) {
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /onvif/{channel}/device_service", s.handleDeviceService)
 	mux.HandleFunc("GET /onvif/device_list", s.handleDeviceList)
+	// 兜底：部分 ONVIF 客户端（如 onvif-ai）把云台等请求发到根路径或
+	// 标准 /onvif/* 路径而非 Capabilities 里的 XAddr，这里统一接住。
+	mux.HandleFunc("POST /{$}", s.handleRootSOAP)
+	mux.HandleFunc("POST /onvif/device_service", s.handleRootSOAP)
+	mux.HandleFunc("POST /onvif/ptz_service", s.handleRootSOAP)
+	mux.HandleFunc("POST /onvif/media_service", s.handleRootSOAP)
+}
+
+// handleRootSOAP 处理发到根路径/标准路径的 ONVIF SOAP：
+// 仅注册了一台设备时直接路由到该设备；多台时按 Body 无法区分，返回 Fault。
+func (s *Server) handleRootSOAP(w http.ResponseWriter, r *http.Request) {
+	devs := s.up.Registry.Snapshot()
+	var withChannels []uplevel.Device
+	for _, d := range devs {
+		if len(d.Channels) > 0 {
+			withChannels = append(withChannels, d)
+		}
+	}
+	switch {
+	case len(withChannels) == 1:
+		http.StripPrefix("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("channel", withChannels[0].DeviceID)
+			s.handleDeviceService(w, r)
+		})).ServeHTTP(w, r)
+	case len(withChannels) == 0:
+		writeSOAPFault(w, "no device registered yet")
+	default:
+		writeSOAPFault(w, fmt.Sprintf("multiple devices registered (%d), use per-device service URL", len(withChannels)))
+	}
 }
 
 // handleDeviceList 调试辅助：列出全部通道的 ONVIF 服务入口。
@@ -122,7 +151,21 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, payload := parseSOAPAction(string(body))
-	s.logger.Debug("onvif request", "id", id, "action", action, "channels", len(req.channels))
+	// 部分 SOAP 1.1 客户端把动作放 HTTP SOAPAction 头；Body 解析失败时兜底。
+	if action == "" {
+		if sa := r.Header.Get("SOAPAction"); sa != "" {
+			sa = strings.Trim(sa, `"`)
+			if idx := strings.LastIndex(sa, "/"); idx >= 0 {
+				sa = sa[idx+1:]
+			}
+			action = sa
+		}
+	}
+	if action == "" {
+		s.logger.Info("onvif unparsed request", "id", id,
+			"body_head", string(body[:min(len(body), 400)]))
+	}
+	s.logger.Info("onvif request", "id", id, "action", action, "channels", len(req.channels))
 
 	var resp string
 	switch action {
@@ -171,10 +214,16 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 		resp = s.respPTZNodes(req)
 	case "GetConfigurations", "GetPTZConfigurations":
 		resp = s.respPTZConfigurations(req)
-	case "GetServiceCapabilities":
-		resp = respPTZServiceCapabilities
+	case "GetServiceCapabilities", "GetConfigurationOptions", "GetCompatibleConfigurations",
+		"GetPresetTours", "GetPresets", "GetVideoSourceConfigurationsOptions":
+		if action == "GetConfigurationOptions" || action == "GetVideoEncoderConfigurationOptions" {
+			resp = s.respVideoConfigs(req)
+		} else {
+			resp = respPTZServiceCapabilities
+		}
 	default:
-		s.logger.Debug("onvif action not implemented, reply ok", "action", action)
+		s.logger.Info("onvif action not implemented", "action", action,
+			"payload_head", payload[:min(len(payload), 400)])
 		resp = fmt.Sprintf(respGenericOK, action)
 	}
 	resp = finalizePlaceholders(resp)
