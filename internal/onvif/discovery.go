@@ -135,23 +135,57 @@ func (s *Server) runHelloFallback(ctx context.Context) {
 	}
 }
 
-// probeMatch 构造 ProbeMatches 应答（全部国标通道入口）。
+// probeMatch 构造 ProbeMatches 应答：每个国标通道一个独立虚拟设备条目，
+// 客户端会把它们识别为多台 ONVIF 相机（每台一个 profile）。
 func (s *Server) probeMatch(relatesTo string) string {
-	var xaddrs, scopes []string
-	scopes = append(scopes,
-		"onvif://www.onvif.org/type/NetworkVideoTransmitter",
-		"onvif://www.onvif.org/type/video_encoder",
-		"onvif://www.onvif.org/type/ptz",
-		"onvif://www.onvif.org/Profile/Streaming",
-		"onvif://www.onvif.org/name/local-gb28181-adapter")
+	type vdev struct {
+		id     string
+		name   string
+		xaddr  string
+		online bool
+	}
+	var devices []vdev
 	for _, dev := range s.up.Registry.Snapshot() {
 		for _, ch := range dev.Channels {
-			xaddrs = append(xaddrs, s.serviceURL(ch.DeviceID))
+			name := ch.Name
+			if name == "" {
+				name = ch.DeviceID
+			}
+			devices = append(devices, vdev{
+				id:     ch.DeviceID,
+				name:   name,
+				xaddr:  s.serviceURL(ch.DeviceID),
+				online: ch.Status == "ON",
+			})
 		}
 	}
-	if len(xaddrs) == 0 {
+	if len(devices) == 0 {
 		// 目录未就绪时也给出服务根入口，避免客户端空手而归。
-		xaddrs = append(xaddrs, s.baseURL()+"/onvif/device_list")
+		return s.singleProbeMatch(relatesTo, "adapter", s.baseURL()+"/onvif/device_list")
+	}
+	var entries strings.Builder
+	for i, d := range devices {
+		scopes := []string{
+			"onvif://www.onvif.org/type/NetworkVideoTransmitter",
+			"onvif://www.onvif.org/type/video_encoder",
+			"onvif://www.onvif.org/type/ptz",
+			"onvif://www.onvif.org/Profile/Streaming",
+			"onvif://www.onvif.org/name/" + urlPathEscape(d.name),
+			"onvif://www.onvif.org/hardware/GB28181-Adapter",
+		}
+		if !d.online {
+			scopes = append(scopes, "onvif://www.onvif.org/status/Offline")
+		}
+		fmt.Fprintf(&entries, `<d:ProbeMatch>`+
+			`<wsa:EndpointReference><wsa:Address>urn:uuid:gb28181-%s</wsa:Address></wsa:EndpointReference>`+
+			`<d:Types>dn:NetworkVideoTransmitter</d:Types>`+
+			`<d:Scopes>%s</d:Scopes>`+
+			`<d:XAddrs>%s</d:XAddrs>`+
+			`<d:MetadataVersion>1</d:MetadataVersion>`+
+			`</d:ProbeMatch>`, xmlEscape(d.id), xmlEscape(strings.Join(scopes, " ")), xmlEscape(d.xaddr))
+		if i < len(devices)-1 {
+			entries.WriteString("")
+		}
 	}
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
 		`<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"` +
@@ -165,13 +199,35 @@ func (s *Server) probeMatch(relatesTo string) string {
 		`<wsa:MessageID>urn:uuid:` + newUUID() + `</wsa:MessageID>` +
 		fmt.Sprintf(`<d:AppSequence InstanceId="%d" MessageNumber="%d"/>`, 1, time.Now().UnixNano()%1e9) +
 		`</SOAP-ENV:Header>` +
+		`<SOAP-ENV:Body><d:ProbeMatches>` + entries.String() + `</d:ProbeMatches></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+}
+
+// singleProbeMatch 单条目 ProbeMatch（兜底）。
+func (s *Server) singleProbeMatch(relatesTo, name, xaddr string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"` +
+		` xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"` +
+		` xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"` +
+		` xmlns:dn="http://www.onvif.org/ver10/network/wsdl">` +
+		`<SOAP-ENV:Header>` +
+		`<wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</wsa:Action>` +
+		`<wsa:RelatesTo>` + xmlEscape(relatesTo) + `</wsa:RelatesTo>` +
+		`<wsa:To>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>` +
+		`<wsa:MessageID>urn:uuid:` + newUUID() + `</wsa:MessageID>` +
+		fmt.Sprintf(`<d:AppSequence InstanceId="%d" MessageNumber="%d"/>`, 1, time.Now().UnixNano()%1e9) +
+		`</SOAP-ENV:Header>` +
 		`<SOAP-ENV:Body><d:ProbeMatches><d:ProbeMatch>` +
-		`<wsa:EndpointReference><wsa:Address>urn:uuid:local-gb28181-adapter</wsa:Address></wsa:EndpointReference>` +
+		`<wsa:EndpointReference><wsa:Address>urn:uuid:gb28181-` + xmlEscape(name) + `</wsa:Address></wsa:EndpointReference>` +
 		`<d:Types>dn:NetworkVideoTransmitter</d:Types>` +
-		`<d:Scopes>` + xmlEscape(strings.Join(scopes, " ")) + `</d:Scopes>` +
-		`<d:XAddrs>` + xmlEscape(strings.Join(xaddrs, " ")) + `</d:XAddrs>` +
+		`<d:Scopes>onvif://www.onvif.org/name/` + xmlEscape(urlPathEscape(name)) + `</d:Scopes>` +
+		`<d:XAddrs>` + xmlEscape(xaddr) + `</d:XAddrs>` +
 		`<d:MetadataVersion>1</d:MetadataVersion>` +
 		`</d:ProbeMatch></d:ProbeMatches></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+}
+
+// urlPathEscape scope 值转义。
+func urlPathEscape(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, " ", "%20"), "/", "-")
 }
 
 // hello 周期性组播 Hello（fallback 用）。

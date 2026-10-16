@@ -1,9 +1,8 @@
 package onvif
 
 import (
+	"encoding/xml"
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 )
 
@@ -230,22 +229,33 @@ var respGenericOK = soapEnvelope(`<tds:%sResponse/>`)
 
 // ---- PTZ 动作 ----
 
-var (
-	panTiltRe = regexp.MustCompile(`(?is)<tt:PanTilt[^>]*x="(-?[\d.]+)"[^>]*y="(-?[\d.]+)"`)
-	zoomRe    = regexp.MustCompile(`(?is)<tt:Zoom[^>]*x="(-?[\d.]+)"`)
-)
+// onvifVelocity ONVIF 速度/位置结构（忽略命名空间前缀，属性解析）。
+type onvifVelocity struct {
+	PanTilt struct {
+		X float64 `xml:"x,attr"`
+		Y float64 `xml:"y,attr"`
+	} `xml:"PanTilt"`
+	Zoom struct {
+		X float64 `xml:"x,attr"`
+	} `xml:"Zoom"`
+}
 
 // handleContinuousMove 解析 ONVIF 速度并翻译为国标云台指令。
+// 用标准 XML 解析（任何命名空间前缀均兼容）。
 func (s *Server) handleContinuousMove(channelID, payload string) string {
-	pan, tilt, zoom := 0.0, 0.0, 0.0
-	if m := panTiltRe.FindStringSubmatch(payload); m != nil {
-		pan = parseFloat(m[1])
-		tilt = parseFloat(m[2])
+	var req struct {
+		XMLName xml.Name
+		Velocity onvifVelocity `xml:"Velocity"`
 	}
-	if m := zoomRe.FindStringSubmatch(payload); m != nil {
-		zoom = parseFloat(m[1])
+	if err := xml.Unmarshal([]byte(payload), &req); err != nil {
+		s.logger.Warn("onvif ptz parse failed", "channel", channelID, "err", err.Error())
+		return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
 	}
-	action, speed := mapVelocity(pan, tilt, zoom)
+	action, speed := mapVelocity(req.Velocity.PanTilt.X, req.Velocity.PanTilt.Y, req.Velocity.Zoom.X)
+	s.logger.Info("onvif ptz continuous move",
+		"channel", channelID,
+		"pan", req.Velocity.PanTilt.X, "tilt", req.Velocity.PanTilt.Y, "zoom", req.Velocity.Zoom.X,
+		"action", action)
 	if action == "" {
 		return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
 	}
@@ -297,15 +307,6 @@ func mapVelocity(pan, tilt, zoom float64) (action string, speed int) {
 		return "down", speedOf(tilt)
 	}
 	return "", 0
-}
-
-func parseFloat(s string) float64 {
-	var v float64
-	_, err := fmt.Sscanf(strings.TrimSpace(s), "%g", &v)
-	if err != nil {
-		return 0
-	}
-	return v
 }
 
 func abs(v float64) float64 {

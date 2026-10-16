@@ -122,6 +122,10 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 		resp = s.respVideoConfigs(channelID)
 	case "ContinuousMove":
 		resp = s.handleContinuousMove(channelID, payload)
+	case "AbsoluteMove", "RelativeMove":
+		// 国标 A50F 云台指令无绝对/相对定位，确认收到（不产生运动）。
+		s.logger.Debug("onvif ptz absolute/relative move acknowledged (unsupported)", "channel", channelID)
+		resp = soapEnvelope(`<tptz:MoveResponse/>`)
 	case "Stop":
 		resp = s.handlePTZStop(channelID, payload)
 	case "GetStatus":
