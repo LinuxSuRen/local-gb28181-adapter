@@ -19,11 +19,14 @@ import (
 
 	"github.com/linuxsuren/local-gb28181-adapter/internal/api"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/config"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/onvif"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/ptzmock"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/rtspserver"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/rtspush"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/sig"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/snapshot"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/stream"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/uplevel"
 )
 
 // version / commit / buildDate 由构建注入（-ldflags）。
@@ -131,18 +134,45 @@ func main() {
 			"err", err.Error())
 	}
 
-	apiSrv := api.NewServer(store, ptzReg, streams, snaps, gb, version, logger)
+	// 国标上级平台模式：接收下级国标设备（如海康相机）接入与点播。
+	up := uplevel.New(store, uplevelSink(rtspSrv != nil, pushAddr, logger), logger)
+	up.AdvertiseIP = ip
+	if err := up.Start(ctx); err != nil {
+		logger.Error("uplevel signaling start failed", "err", err.Error())
+	}
+
+	apiSrv := api.NewServer(store, ptzReg, streams, snaps, gb, up, version, logger)
 	apiSrv.RTSPBaseURL = pushAddr
 	apiSrv.OnPlatformChange = func() {
 		if err := gb.Reconfigure(ctx); err != nil {
 			logger.Error("gb28181 reconfigure failed", "err", err.Error())
 		}
 	}
+	apiSrv.OnUplevelChange = func() {
+		if err := up.Reconfigure(ctx); err != nil {
+			logger.Error("uplevel reconfigure failed", "err", err.Error())
+		}
+	}
+
+	// ONVIF 对外服务：把国标通道虚拟为 ONVIF 设备（StreamUri/PTZ/WS-Discovery）。
+	onvifSrv := onvif.New(store, up, logger)
+	apiSrv.ExtraRoutes = onvifSrv.Register
 
 	httpServer := &http.Server{
 		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	onvifSrv.SetEndpoints(fmt.Sprintf("http://%s:%d", ip, httpPort), rtspPortActual)
+	discoveryStop := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(discoveryStop)
+	}()
+	go func() {
+		if err := onvifSrv.StartDiscovery(discoveryStop); err != nil {
+			logger.Warn("ws-discovery exited", "err", err.Error())
+		}
+	}()
 
 	go streams.Sync(store.Root().Cameras)
 
@@ -165,11 +195,23 @@ func main() {
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
 	gb.Stop()
+	up.Stop()
 	streams.StopAll()
 	if rtspSrv != nil {
 		rtspSrv.Close()
 	}
 	logger.Info("stopped")
+}
+
+// uplevelSink 构造点播收流的转发出口：RTSP 服务可用时推流，否则丢弃帧。
+func uplevelSink(rtspOK bool, pushAddr string, logger *slog.Logger) uplevel.StreamSink {
+	if !rtspOK {
+		return nil
+	}
+	sink := rtspush.NewSink(pushAddr, logger)
+	return uplevel.StreamSinkFunc(func(channelID string) (uplevel.FrameWriter, error) {
+		return sink.OpenChannel(channelID)
+	})
 }
 
 // ---- 辅助 ----

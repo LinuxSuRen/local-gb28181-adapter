@@ -114,9 +114,19 @@ func TestTCPSenderRFC4571(t *testing.T) {
 			resCh <- result{err: err}
 			return
 		}
-		buf := make([]byte, 4096)
-		n, err := conn.Read(buf)
-		resCh <- result{data: buf[:n], err: err}
+		// RFC4571 帧 = 2 字节长度前缀 + RTP 包；单次 Read 可能读不满，循环读全。
+		want := 2 + RTPHeaderSize + 100
+		buf := make([]byte, 0, want)
+		tmp := make([]byte, 512)
+		for len(buf) < want {
+			n, err := conn.Read(tmp)
+			buf = append(buf, tmp[:n]...)
+			if err != nil {
+				resCh <- result{data: buf, err: err}
+				return
+			}
+		}
+		resCh <- result{data: buf}
 	}()
 
 	s, err := NewTCPSender(ln.Addr().String(), 42)

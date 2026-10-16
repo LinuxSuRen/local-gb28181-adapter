@@ -14,9 +14,9 @@ type MediaTransport string
 
 // 支持的传输模式。
 const (
-	TransportUDP         MediaTransport = "UDP"
-	TransportTCPPassive  MediaTransport = "TCP-PASSIVE" // 平台监听，设备主动连接
-	TransportTCPActive   MediaTransport = "TCP-ACTIVE"  // 平台主动连接设备（设备监听）
+	TransportUDP        MediaTransport = "UDP"
+	TransportTCPPassive MediaTransport = "TCP-PASSIVE" // 平台监听，设备主动连接
+	TransportTCPActive  MediaTransport = "TCP-ACTIVE"  // 平台主动连接设备（设备监听）
 )
 
 // Offer 平台 INVITE 携带的 SDP 解析结果。
@@ -101,6 +101,22 @@ func ParseOffer(body string) (Offer, error) {
 		o.Transport = TransportUDP
 	}
 	return o, nil
+}
+
+// BuildPlatformOffer 构造平台（上级）向设备发起 INVITE 的 SDP：
+// 平台为收流方（a=recvonly），媒体地址与端口为平台本机收流 UDP 端口。
+func BuildPlatformOffer(channelID, recvIP string, recvPort int, ssrc uint32) string {
+	var sb strings.Builder
+	sb.WriteString("v=0\r\n")
+	fmt.Fprintf(&sb, "o=%s 0 0 IN IP4 %s\r\n", channelID, recvIP)
+	sb.WriteString("s=Play\r\n")
+	fmt.Fprintf(&sb, "c=IN IP4 %s\r\n", recvIP)
+	sb.WriteString("t=0 0\r\n")
+	fmt.Fprintf(&sb, "m=video %d RTP/AVP 96\r\n", recvPort)
+	sb.WriteString("a=recvonly\r\n")
+	sb.WriteString("a=rtpmap:96 PS/90000\r\n")
+	fmt.Fprintf(&sb, "y=%s\r\n", strconv.FormatUint(uint64(ssrc), 10))
+	return sb.String()
 }
 
 // BuildAnswer 构造 200 OK 应答 SDP。

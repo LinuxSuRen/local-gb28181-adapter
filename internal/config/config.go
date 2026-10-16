@@ -106,14 +106,33 @@ func cameraSeq(id string) int {
 
 // Platform 上级国标平台（SIP 服务器）对接配置。
 type Platform struct {
-	Enabled           bool   `json:"enabled"`             // 是否启用对接
-	ServerID          string `json:"server_id"`           // 平台 SIP ID（20 位）
-	ServerAddr        string `json:"server_addr"`         // 平台 SIP 服务器 host:port
-	DeviceID          string `json:"device_id"`           // 本设备 SIP ID（20 位）
-	Password          string `json:"password"`            // 注册密码
-	LocalAddr         string `json:"local_addr"`          // 本地 SIP 监听地址，默认 :5060
-	RegisterExpires   int    `json:"register_expires"`    // 注册有效期（秒）
-	KeepaliveInterval int    `json:"keepalive_interval"`  // 心跳间隔（秒）
+	Enabled           bool   `json:"enabled"`            // 是否启用对接
+	ServerID          string `json:"server_id"`          // 平台 SIP ID（20 位）
+	ServerAddr        string `json:"server_addr"`        // 平台 SIP 服务器 host:port
+	DeviceID          string `json:"device_id"`          // 本设备 SIP ID（20 位）
+	Password          string `json:"password"`           // 注册密码
+	LocalAddr         string `json:"local_addr"`         // 本地 SIP 监听地址，默认 :5060
+	RegisterExpires   int    `json:"register_expires"`   // 注册有效期（秒）
+	KeepaliveInterval int    `json:"keepalive_interval"` // 心跳间隔（秒）
+}
+
+// Uplevel 上级平台模式配置：适配器作为国标平台（SIP 服务器），
+// 接收下级国标设备（如海康相机）的注册、心跳与目录，并可主动点播收流。
+type Uplevel struct {
+	Enabled      bool   `json:"enabled"`        // 是否启用上级平台模式
+	ServerID     string `json:"server_id"`      // 平台 SIP 编码（20 位）
+	Password     string `json:"password"`       // 下级设备注册密码
+	LocalAddr    string `json:"local_addr"`     // SIP 监听地址，默认 :5060
+	MediaPortMin int    `json:"media_port_min"` // 点播收流 UDP 端口范围下限
+	MediaPortMax int    `json:"media_port_max"` // 点播收流 UDP 端口范围上限
+}
+
+// Realm 返回认证域（取平台编码前 10 位）。
+func (u Uplevel) Realm() string {
+	if len(u.ServerID) < 10 {
+		return u.ServerID
+	}
+	return u.ServerID[:10]
 }
 
 // Domain 返回 SIP 域（取设备编码前 10 位）。
@@ -146,6 +165,7 @@ type Server struct {
 type Root struct {
 	Server       Server   `json:"server"`
 	Platform     Platform `json:"platform"`
+	Uplevel      Uplevel  `json:"uplevel"` // 上级平台模式（接收下级国标设备接入）
 	Manufacturer string   `json:"manufacturer"`
 	Model        string   `json:"model"`
 	Firmware     string   `json:"firmware"`
@@ -173,6 +193,14 @@ func Default() *Root {
 			LocalAddr:         ":5060",
 			RegisterExpires:   3600,
 			KeepaliveInterval: 60,
+		},
+		Uplevel: Uplevel{
+			Enabled:      false,
+			ServerID:     gbcode.Generate(gbcode.DefaultPrefix, gbcode.TypeCenter, 1),
+			Password:     "12345678",
+			LocalAddr:    ":5060",
+			MediaPortMin: 30000,
+			MediaPortMax: 30499,
 		},
 		Manufacturer: "linuxsuren",
 		Model:        "local-gb28181-adapter",
@@ -246,6 +274,15 @@ func (r *Root) normalize() {
 	}
 	if r.Platform.KeepaliveInterval <= 0 {
 		r.Platform.KeepaliveInterval = d.Platform.KeepaliveInterval
+	}
+	if r.Uplevel.ServerID == "" {
+		r.Uplevel.ServerID = d.Uplevel.ServerID
+	}
+	if r.Uplevel.LocalAddr == "" {
+		r.Uplevel.LocalAddr = d.Uplevel.LocalAddr
+	}
+	if r.Uplevel.MediaPortMin <= 0 || r.Uplevel.MediaPortMax < r.Uplevel.MediaPortMin {
+		r.Uplevel.MediaPortMin, r.Uplevel.MediaPortMax = d.Uplevel.MediaPortMin, d.Uplevel.MediaPortMax
 	}
 	if r.Manufacturer == "" {
 		r.Manufacturer = d.Manufacturer

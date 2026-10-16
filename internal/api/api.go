@@ -19,6 +19,7 @@ import (
 	"github.com/linuxsuren/local-gb28181-adapter/internal/sig"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/snapshot"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/stream"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/uplevel"
 	"github.com/linuxsuren/local-gb28181-adapter/web"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	streams *stream.Manager
 	snaps   *snapshot.Generator
 	gb      *sig.Service
+	uplevel *uplevel.Service
 	version string
 	logger  *slog.Logger
 
@@ -38,17 +40,23 @@ type Server struct {
 
 	// OnPlatformChange 平台配置保存后的回调（触发信令栈重载）。
 	OnPlatformChange func()
+
+	// OnUplevelChange 上级平台配置保存后的回调（触发上级信令栈重载）。
+	OnUplevelChange func()
+
+	// ExtraRoutes 额外路由注册（如 ONVIF 服务），在 Handler() 构建时调用。
+	ExtraRoutes func(mux *http.ServeMux)
 }
 
 // NewServer 创建管理服务。
 func NewServer(store *config.Store, ptzReg *ptzmock.Registry, streams *stream.Manager,
-	snaps *snapshot.Generator, gb *sig.Service, version string, logger *slog.Logger) *Server {
+	snaps *snapshot.Generator, gb *sig.Service, up *uplevel.Service, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Server{
 		store: store, ptzReg: ptzReg, streams: streams,
-		snaps: snaps, gb: gb, version: version, logger: logger,
+		snaps: snaps, gb: gb, uplevel: up, version: version, logger: logger,
 	}
 }
 
@@ -66,6 +74,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/platform", s.handlePutPlatform)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 
+	// 国标上级平台（下级设备接入）。
+	mux.HandleFunc("GET /api/uplevel", s.handleGetUplevel)
+	mux.HandleFunc("PUT /api/uplevel", s.handlePutUplevel)
+	mux.HandleFunc("GET /api/uplevel/devices", s.handleUplevelDevices)
+	mux.HandleFunc("POST /api/uplevel/devices/{id}/query", s.handleUplevelDeviceQuery)
+	mux.HandleFunc("POST /api/uplevel/channels/{id}/play", s.handleUplevelPlay)
+	mux.HandleFunc("DELETE /api/uplevel/channels/{id}/play", s.handleUplevelPlay)
+	mux.HandleFunc("GET /api/uplevel/sessions", s.handleUplevelSessions)
+	mux.HandleFunc("POST /api/uplevel/channels/{id}/ptz", s.handleUplevelPTZ)
+	mux.HandleFunc("GET /api/uplevel/channels/{id}/snapshot", s.handleUplevelSnapshot)
+
 	mux.HandleFunc("GET /api/cameras", s.handleListCameras)
 	mux.HandleFunc("POST /api/cameras", s.handleCreateCamera)
 	mux.HandleFunc("PUT /api/cameras/{id}", s.handleUpdateCamera)
@@ -76,6 +95,11 @@ func (s *Server) Handler() http.Handler {
 
 	// 本地摄像头设备枚举（跨平台：内置/USB 摄像头）。
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+
+	// 扩展路由（ONVIF 等）。
+	if s.ExtraRoutes != nil {
+		s.ExtraRoutes(mux)
+	}
 
 	// 前端静态资源。
 	staticHandler := spaHandler()
@@ -107,15 +131,15 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 		reg["last_error"] = lastErr
 	}
 	writeData(w, http.StatusOK, map[string]any{
-		"version":         s.version,
-		"advertise_ip":    root.Server.AdvertiseIP,
-		"rtsp_port":       root.Server.RTSPPort,
-		"sip_local_addr":  root.Platform.LocalAddr,
-		"device_id":       root.Platform.DeviceID,
-		"camera_count":    len(root.Cameras),
-		"channel_count":   enabled,
-		"registration":    reg,
-		"session_count":   len(s.gb.Sessions()),
+		"version":        s.version,
+		"advertise_ip":   root.Server.AdvertiseIP,
+		"rtsp_port":      root.Server.RTSPPort,
+		"sip_local_addr": root.Platform.LocalAddr,
+		"device_id":      root.Platform.DeviceID,
+		"camera_count":   len(root.Cameras),
+		"channel_count":  enabled,
+		"registration":   reg,
+		"session_count":  len(s.gb.Sessions()),
 	})
 }
 
@@ -322,15 +346,15 @@ func (s *Server) handleListCameras(w http.ResponseWriter, _ *http.Request) {
 }
 
 type cameraInput struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Source      string `json:"source"`
-	Width       *int   `json:"width"`
-	Height      *int   `json:"height"`
-	Framerate   *int   `json:"framerate"`
-	BitrateKBPS *int   `json:"bitrate_kbps"`
-	Infrared    *bool  `json:"infrared"`
-	Enabled     *bool  `json:"enabled"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Source      string  `json:"source"`
+	Width       *int    `json:"width"`
+	Height      *int    `json:"height"`
+	Framerate   *int    `json:"framerate"`
+	BitrateKBPS *int    `json:"bitrate_kbps"`
+	Infrared    *bool   `json:"infrared"`
+	Enabled     *bool   `json:"enabled"`
 	ChannelID   *string `json:"channel_id"`
 }
 
