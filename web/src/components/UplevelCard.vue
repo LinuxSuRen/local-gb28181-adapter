@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import {
   getUplevel, updateUplevel, getUplevelDevices, getUplevelSessions,
   queryUplevelDevice, playUplevelChannel, stopUplevelChannel, sendUplevelPtz,
-  uplevelSnapshotUrl
+  uplevelSnapshotUrl, setChannelInfrared
 } from '../api'
 
 const emit = defineEmits(['saved'])
@@ -169,6 +169,16 @@ async function ptz(channelId, action) {
   }
 }
 
+async function toggleInfrared(ch) {
+  try {
+    await setChannelInfrared(ch.device_id, !ch.infrared)
+    ElMessage.success(ch.infrared ? '已取消红外标记' : '已标记为红外/热成像通道')
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+  await loadDevices()
+}
+
 // 抓图预览
 const snapVisible = ref(false)
 const snapChannel = ref(null)
@@ -293,7 +303,17 @@ function onSnapError() {
       <el-divider content-position="left">通道（点播测试）</el-divider>
       <el-table :data="channels" size="small">
         <el-table-column prop="device_id" label="通道编码" min-width="180" />
-        <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+        <el-table-column label="名称" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.name }}
+            <el-tag v-if="row.infrared" type="warning" size="small">红外</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="红外" width="80">
+          <template #default="{ row }">
+            <el-switch :model-value="!!row.infrared" size="small" @change="toggleInfrared(row)" />
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 'ON' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>

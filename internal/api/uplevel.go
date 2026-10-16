@@ -128,7 +128,22 @@ func (s *Server) handlePutUplevel(w http.ResponseWriter, r *http.Request) {
 // ---- 设备与通道 ----
 
 func (s *Server) handleUplevelDevices(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, http.StatusOK, s.uplevel.Registry.Snapshot())
+	devs := s.uplevel.Registry.Snapshot()
+	up := s.store.Root().Uplevel
+	// 附加红外标记（配置清单或名称关键词）。
+	for i := range devs {
+		infrared := false
+		for _, ch := range devs[i].Channels {
+			if up.IsInfraredChannel(ch.DeviceID, ch.Name) {
+				infrared = true
+			}
+		}
+		devs[i].Infrared = infrared
+		for j := range devs[i].Channels {
+			devs[i].Channels[j].Infrared = up.IsInfraredChannel(devs[i].Channels[j].DeviceID, devs[i].Channels[j].Name)
+		}
+	}
+	writeData(w, http.StatusOK, devs)
 }
 
 // handleUplevelDeviceQuery 触发一次设备信息 + 目录查询并返回最新快照。
@@ -150,6 +165,27 @@ func (s *Server) handleUplevelDeviceQuery(w http.ResponseWriter, r *http.Request
 	}
 	dev, _ := s.uplevel.Registry.Find(deviceID)
 	writeData(w, http.StatusOK, dev)
+}
+
+// handleUplevelInfrared 标记/取消通道的红外属性（持久化，影响 ONVIF
+// profile 名称与发现 scope 的 infrared 标识）。
+func (s *Server) handleUplevelInfrared(w http.ResponseWriter, r *http.Request) {
+	channelID := r.PathValue("id")
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "请求体需要 {\"enabled\": true|false}")
+		return
+	}
+	if err := s.store.Update(func(root *config.Root) error {
+		root.Uplevel.InfraredChannels = root.Uplevel.SetInfraredChannel(channelID, *in.Enabled)
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "save_failed", "保存配置失败")
+		return
+	}
+	writeData(w, http.StatusOK, map[string]bool{"infrared": *in.Enabled})
 }
 
 // ---- 点播会话 ----

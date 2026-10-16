@@ -99,10 +99,15 @@ func (s *Server) respGetDeviceInformation(channelID string) string {
 // profileToken ONVIF profile 固定 token。
 const profileToken = "profile_1"
 
-// respGetProfiles 单一 H264 主码流 profile。
+// respGetProfiles 每个虚拟设备一个 H264 主码流 profile；
+// 红外/热成像通道的 profile 名称带 infrared 后缀（供外部程序识别）。
 func (s *Server) respGetProfiles(channelID string) string {
-	_, dev, _ := s.channelInfo(channelID)
+	up := s.store.Root().Uplevel
+	ch, dev, _ := s.channelInfo(channelID)
 	name := "GB28181_Main_" + shortID(dev.DeviceID)
+	if up.IsInfraredChannel(channelID, ch.Name) {
+		name += "_infrared"
+	}
 	return soapEnvelope(fmt.Sprintf(`
 <trt:GetProfilesResponse>
   <trt:Profiles token="%s" fixed="true">

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/linuxsuren/local-gb28181-adapter/internal/gbcode"
@@ -133,6 +134,34 @@ type Uplevel struct {
 	// {ip}=设备地址、{n}=通道序号。空表示未配置（恒走中转）。
 	// 海康示例：rtsp://admin:密码@{ip}:554/Streaming/Channels/{n}01
 	CameraRTSPTemplate string `json:"camera_rtsp_template"`
+	// InfraredChannels 红外/热成像通道编码清单：ONVIF profile 与发现的
+	// 名称将带 infrared 标识，供外部程序识别红外通道。
+	InfraredChannels []string `json:"infrared_channels"`
+}
+
+// IsInfraredChannel 通道是否被标记为红外（配置清单或名称关键词）。
+func (u Uplevel) IsInfraredChannel(channelID, name string) bool {
+	for _, id := range u.InfraredChannels {
+		if id == channelID {
+			return true
+		}
+	}
+	name = strings.ToLower(name)
+	return strings.Contains(name, "infrared") || strings.Contains(name, "红外") || strings.Contains(name, "thermal")
+}
+
+// SetInfraredChannel 增删红外标记（返回新清单）。
+func (u Uplevel) SetInfraredChannel(channelID string, enabled bool) []string {
+	out := make([]string, 0, len(u.InfraredChannels)+1)
+	for _, id := range u.InfraredChannels {
+		if id != channelID {
+			out = append(out, id)
+		}
+	}
+	if enabled {
+		out = append(out, channelID)
+	}
+	return out
 }
 
 // 流模式取值。

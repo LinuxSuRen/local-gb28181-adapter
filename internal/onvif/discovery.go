@@ -151,6 +151,9 @@ func (s *Server) probeMatch(relatesTo string) string {
 			if name == "" {
 				name = ch.DeviceID
 			}
+			if s.store.Root().Uplevel.IsInfraredChannel(ch.DeviceID, name) {
+				name += " infrared"
+			}
 			devices = append(devices, vdev{
 				id:     ch.DeviceID,
 				name:   name,

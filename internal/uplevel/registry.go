@@ -14,6 +14,7 @@ type ChannelInfo struct {
 	Status       string `json:"status"` // ON / OFF
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Model        string `json:"model,omitempty"`
+	Infrared     bool   `json:"infrared,omitempty"` // 红外/热成像通道（由配置或名称标记）
 }
 
 // Device 已注册的下级国标设备。
@@ -27,6 +28,7 @@ type Device struct {
 	Online        bool      `json:"online"`       // 注册在线
 	KeepaliveOK   bool      `json:"keepalive_ok"` // 心跳是否存活
 	Expires       int       `json:"expires"`      // 注册有效期（秒）
+	Infrared      bool      `json:"infrared,omitempty"` // 设备含红外通道
 
 	// 目录与设备信息（查询后填充）。
 	Channels []ChannelInfo               `json:"channels,omitempty"`

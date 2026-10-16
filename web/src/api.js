@@ -147,3 +147,10 @@ export function sendUplevelPtz(id, action, speed) {
 export function uplevelSnapshotUrl(id) {
   return `/api/uplevel/channels/${encodeURIComponent(id)}/snapshot?t=${Date.now()}`
 }
+
+export function setChannelInfrared(id, enabled) {
+  return request(`/api/uplevel/channels/${encodeURIComponent(id)}/infrared`, {
+    method: 'POST',
+    body: { enabled }
+  })
+}

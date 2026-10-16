@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/uplevel/sessions", s.handleUplevelSessions)
 	mux.HandleFunc("POST /api/uplevel/channels/{id}/ptz", s.handleUplevelPTZ)
 	mux.HandleFunc("GET /api/uplevel/channels/{id}/snapshot", s.handleUplevelSnapshot)
+	mux.HandleFunc("POST /api/uplevel/channels/{id}/infrared", s.handleUplevelInfrared)
 
 	mux.HandleFunc("GET /api/cameras", s.handleListCameras)
 	mux.HandleFunc("POST /api/cameras", s.handleCreateCamera)
