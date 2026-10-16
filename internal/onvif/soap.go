@@ -1,9 +1,11 @@
 package onvif
 
 import (
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 // parseSOAPAction 提取 SOAP Body 里的请求动作名与该元素片段。
@@ -23,6 +25,33 @@ func parseSOAPAction(body string) (action string, payload string) {
 		return "", inner
 	}
 	return e[2], inner
+}
+
+// soapQuery 提取片段中指定本地名元素的首个文本值（任意命名空间前缀）。
+// 用于读取 ProfileToken 等简单文本参数。
+func soapQuery(payload, localName string) string {
+	decoder := xml.NewDecoder(strings.NewReader(payload))
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			return ""
+		}
+		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == localName {
+			var sb strings.Builder
+			for {
+				t2, err := decoder.Token()
+				if err != nil {
+					return strings.TrimSpace(sb.String())
+				}
+				if e, ok := t2.(xml.EndElement); ok && e.Name.Local == localName {
+					return strings.TrimSpace(sb.String())
+				}
+				if c, ok := t2.(xml.CharData); ok {
+					sb.Write(c)
+				}
+			}
+		}
+	}
 }
 
 // writeSOAPFault 输出 SOAP 1.2 Fault。

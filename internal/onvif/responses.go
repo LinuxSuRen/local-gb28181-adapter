@@ -3,6 +3,7 @@ package onvif
 import (
 	"encoding/xml"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -20,8 +21,8 @@ var respGetSystemDateAndTime = soapEnvelope(`
 </tds:GetSystemDateAndTimeResponse>`)
 
 // respGetCapabilities 能力声明：Device/Media/PTZ 服务地址。
-func (s *Server) respGetCapabilities(channelID string) string {
-	svc := s.serviceURL(channelID)
+func (s *Server) respGetCapabilities(req svcReq) string {
+	svc := s.serviceURL(req.id)
 	return soapEnvelope(fmt.Sprintf(`
 <tds:GetCapabilitiesResponse>
   <tds:Capabilities>
@@ -40,8 +41,8 @@ func (s *Server) respGetCapabilities(channelID string) string {
 }
 
 // respGetServices 服务列表。
-func (s *Server) respGetServices(channelID string) string {
-	svc := s.serviceURL(channelID)
+func (s *Server) respGetServices(req svcReq) string {
+	svc := s.serviceURL(req.id)
 	return soapEnvelope(fmt.Sprintf(`
 <tds:GetServicesResponse>
   <tds:Service>
@@ -62,26 +63,27 @@ func (s *Server) respGetServices(channelID string) string {
 </tds:GetServicesResponse>`, svc, svc, svc))
 }
 
-// respGetDeviceInformation 返回国标设备信息（通道名 + 所属设备型号厂商）。
-func (s *Server) respGetDeviceInformation(channelID string) string {
-	ch, dev, _ := s.channelInfo(channelID)
-	manu, model := ch.Manufacturer, ch.Model
-	if dev.Info != nil {
-		if dev.Info.Manufacturer != "" {
-			manu = dev.Info.Manufacturer
-		}
-		if dev.Info.Model != "" {
-			model = dev.Info.Model
+// respGetDeviceInformation 返回国标设备信息（型号厂商固件从 GB 目录透传）。
+func (s *Server) respGetDeviceInformation(req svcReq) string {
+	dev, ok := s.up.Registry.Find(req.deviceID)
+	manu, model := "", ""
+	if ok && dev.Info != nil {
+		manu = dev.Info.Manufacturer
+		model = dev.Info.Model
+	}
+	if !ok {
+		if ch, _, ok2 := s.channelInfo(req.id); ok2 {
+			manu, model = ch.Manufacturer, ch.Model
 		}
 	}
 	if manu == "" {
 		manu = "GB28181"
 	}
 	if model == "" {
-		model = "GB28181 Channel"
+		model = "GB28181 Camera"
 	}
 	firmware := ""
-	if dev.Info != nil {
+	if ok && dev.Info != nil {
 		firmware = dev.Info.Firmware
 	}
 	return soapEnvelope(fmt.Sprintf(`
@@ -93,33 +95,33 @@ func (s *Server) respGetDeviceInformation(channelID string) string {
   <tds:HardwareId>%s</tds:HardwareId>
 </tds:GetDeviceInformationResponse>`,
 		xmlEscape(manu), xmlEscape(model), xmlEscape(firmware),
-		xmlEscape(channelID), xmlEscape(dev.DeviceID)))
+		xmlEscape(req.deviceID), xmlEscape(req.deviceID)))
 }
 
-// profileToken ONVIF profile 固定 token。
-const profileToken = "profile_1"
+// profileTokenPrefix ONVIF profile token 前缀（profile_N 按通道顺序）。
+const profileTokenPrefix = "profile_"
 
-// respGetProfiles 每个虚拟设备一个 H264 主码流 profile；
-// 红外/热成像通道的 profile 名称带 infrared 后缀（供外部程序识别）。
-func (s *Server) respGetProfiles(channelID string) string {
+// respGetProfiles 每通道一个 profile（profile_1..N，通常 profile_1 可见光、
+// 红外/热成像通道的名称带 infrared 后缀），一台相机对应多 profile。
+func (s *Server) respGetProfiles(req svcReq) string {
 	up := s.store.Root().Uplevel
-	ch, dev, _ := s.channelInfo(channelID)
-	name := "GB28181_Main_" + shortID(dev.DeviceID)
-	if up.IsInfraredChannel(channelID, ch.Name) {
-		name += "_infrared"
-	}
-	return soapEnvelope(fmt.Sprintf(`
-<trt:GetProfilesResponse>
-  <trt:Profiles token="%s" fixed="true">
+	var b strings.Builder
+	for i, ch := range req.channels {
+		name := fmt.Sprintf("GB28181_Main_%s", shortID(ch.DeviceID))
+		if up.IsInfraredChannel(ch.DeviceID, ch.Name) {
+			name += "_infrared"
+		}
+		fmt.Fprintf(&b, `
+  <trt:Profiles token="%s%d" fixed="true">
     <tt:Name>%s</tt:Name>
-    <tt:VideoSourceConfiguration token="vsrc_1">
-      <tt:Name>VideoSource_1</tt:Name>
+    <tt:VideoSourceConfiguration token="vsrc_%d">
+      <tt:Name>VideoSource_%d</tt:Name>
       <tt:UseCount>1</tt:UseCount>
-      <tt:SourceToken>video_source_1</tt:SourceToken>
+      <tt:SourceToken>video_source_%d</tt:SourceToken>
       <tt:Bounds x="0" y="0" width="1920" height="1080"/>
     </tt:VideoSourceConfiguration>
-    <tt:VideoEncoderConfiguration token="vec_1">
-      <tt:Name>VideoEncoder_1</tt:Name>
+    <tt:VideoEncoderConfiguration token="vec_%d">
+      <tt:Name>VideoEncoder_%d</tt:Name>
       <tt:UseCount>1</tt:UseCount>
       <tt:Encoding>H264</tt:Encoding>
       <tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
@@ -130,8 +132,9 @@ func (s *Server) respGetProfiles(channelID string) string {
       <tt:UseCount>1</tt:UseCount>
       <tt:NodeToken>ptz_node_1</tt:NodeToken>
     </tt:PTZConfiguration>
-  </trt:Profiles>
-</trt:GetProfilesResponse>`, profileToken, xmlEscape(name)))
+  </trt:Profiles>`, profileTokenPrefix, i+1, xmlEscape(name), i+1, i+1, i+1, i+1, i+1)
+	}
+	return soapEnvelope("<trt:GetProfilesResponse>" + b.String() + "</trt:GetProfilesResponse>")
 }
 
 // shortID 编码缩略展示。
@@ -142,21 +145,12 @@ func shortID(id string) string {
 	return id
 }
 
-// respGetStreamUri RTSP 地址（适配器内嵌 RTSP，点播自动建立）。
-func (s *Server) respGetStreamUri(channelID string) string {
-	return soapEnvelope(fmt.Sprintf(`
-<trt:GetStreamUriResponse>
-  <trt:MediaUri>
-    <tt:Uri>%s</tt:Uri>
-    <tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
-    <tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>
-    <tt:TimeToLive>86400</tt:TimeToLive>
-  </trt:MediaUri>
-</trt:GetStreamUriResponse>`, xmlEscape(s.streamURL(channelID))))
-}
-
-// respGetSnapshotUri 抓图地址。
-func (s *Server) respGetSnapshotUri(channelID string) string {
+// respGetSnapshotUri 抓图地址（取第一通道；抓图跟随取流模式决策）。
+func (s *Server) respGetSnapshotUri(req svcReq) string {
+	channelID := req.id
+	if len(req.channels) > 0 {
+		channelID = req.channels[0].DeviceID
+	}
 	return soapEnvelope(fmt.Sprintf(`
 <trt:GetSnapshotUriResponse>
   <trt:MediaUri>
@@ -169,7 +163,7 @@ func (s *Server) respGetSnapshotUri(channelID string) string {
 }
 
 // respVideoConfigs 简化的编码配置（部分客户端取流前会请求）。
-func (s *Server) respVideoConfigs(channelID string) string {
+func (s *Server) respVideoConfigs(req svcReq) string {
 	return soapEnvelope(`
 <trt:GetVideoEncoderConfigurationsResponse>
   <trt:Configurations token="vec_1">
@@ -204,7 +198,7 @@ var respPTZServiceCapabilities = soapEnvelope(`
 </tptz:GetServiceCapabilitiesResponse>`)
 
 // respPTZNodes PTZ 节点。
-func (s *Server) respPTZNodes(channelID string) string {
+func (s *Server) respPTZNodes(req svcReq) string {
 	return soapEnvelope(`
 <tptz:GetNodesResponse>
   <tptz:PTZNode token="ptz_node_1">
@@ -218,7 +212,7 @@ func (s *Server) respPTZNodes(channelID string) string {
 }
 
 // respPTZConfigurations PTZ 配置。
-func (s *Server) respPTZConfigurations(channelID string) string {
+func (s *Server) respPTZConfigurations(req svcReq) string {
 	return soapEnvelope(`
 <tptz:GetConfigurationsResponse>
   <tptz:PTZConfiguration token="ptz_1">
@@ -246,38 +240,48 @@ type onvifVelocity struct {
 }
 
 // handleContinuousMove 解析 ONVIF 速度并翻译为国标云台指令。
-// 用标准 XML 解析（任何命名空间前缀均兼容）。
-func (s *Server) handleContinuousMove(channelID, payload string) string {
-	var req struct {
-		XMLName xml.Name
+// 用标准 XML 解析（任何命名空间前缀均兼容）；ProfileToken 决定目标通道。
+func (s *Server) handleContinuousMove(req svcReq, payload string) string {
+	var body struct {
+		XMLName  xml.Name
 		Velocity onvifVelocity `xml:"Velocity"`
 	}
-	if err := xml.Unmarshal([]byte(payload), &req); err != nil {
-		s.logger.Warn("onvif ptz parse failed", "channel", channelID, "err", err.Error())
+	if err := xml.Unmarshal([]byte(payload), &body); err != nil {
+		s.logger.Warn("onvif ptz parse failed", "id", req.id, "err", err.Error())
 		return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
 	}
-	action, speed := mapVelocity(req.Velocity.PanTilt.X, req.Velocity.PanTilt.Y, req.Velocity.Zoom.X)
+	token := soapQuery(payload, "ProfileToken")
+	ch, ok := req.channelByToken(token)
+	if !ok {
+		s.logger.Warn("onvif ptz unknown profile", "id", req.id, "token", token)
+		return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
+	}
+	action, speed := mapVelocity(body.Velocity.PanTilt.X, body.Velocity.PanTilt.Y, body.Velocity.Zoom.X)
 	s.logger.Info("onvif ptz continuous move",
-		"channel", channelID,
-		"pan", req.Velocity.PanTilt.X, "tilt", req.Velocity.PanTilt.Y, "zoom", req.Velocity.Zoom.X,
+		"channel", ch.DeviceID,
+		"pan", body.Velocity.PanTilt.X, "tilt", body.Velocity.PanTilt.Y, "zoom", body.Velocity.Zoom.X,
 		"action", action)
 	if action == "" {
 		return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
 	}
 	ctx, cancel := contextTimeout(6 * time.Second)
 	defer cancel()
-	if err := s.up.SendPTZ(ctx, channelID, action, speed); err != nil {
-		s.logger.Warn("onvif ptz failed", "channel", channelID, "action", action, "err", err.Error())
+	if err := s.up.SendPTZ(ctx, ch.DeviceID, action, speed); err != nil {
+		s.logger.Warn("onvif ptz failed", "channel", ch.DeviceID, "action", action, "err", err.Error())
 	}
 	return soapEnvelope(`<tptz:ContinuousMoveResponse/>`)
 }
 
-// handlePTZStop 停止云台。
-func (s *Server) handlePTZStop(channelID, payload string) string {
+// handlePTZStop 停止云台（ProfileToken 决定目标通道）。
+func (s *Server) handlePTZStop(req svcReq, payload string) string {
+	ch, ok := req.channelByToken(soapQuery(payload, "ProfileToken"))
+	if !ok {
+		return soapEnvelope(`<tptz:StopResponse/>`)
+	}
 	ctx, cancel := contextTimeout(6 * time.Second)
 	defer cancel()
-	if err := s.up.SendPTZ(ctx, channelID, "stop", 0); err != nil {
-		s.logger.Warn("onvif ptz stop failed", "channel", channelID, "err", err.Error())
+	if err := s.up.SendPTZ(ctx, ch.DeviceID, "stop", 0); err != nil {
+		s.logger.Warn("onvif ptz stop failed", "channel", ch.DeviceID, "err", err.Error())
 	}
 	return soapEnvelope(`<tptz:StopResponse/>`)
 }

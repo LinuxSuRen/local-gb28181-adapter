@@ -135,8 +135,8 @@ func (s *Server) runHelloFallback(ctx context.Context) {
 	}
 }
 
-// probeMatch 构造 ProbeMatches 应答：每个国标通道一个独立虚拟设备条目，
-// 客户端会把它们识别为多台 ONVIF 相机（每台一个 profile）。
+// probeMatch 构造 ProbeMatches 应答：每个下级设备（一台物理相机）一个
+// 独立虚拟设备条目，其全部通道在 GetProfiles 中呈现为多个 profile。
 func (s *Server) probeMatch(relatesTo string) string {
 	type vdev struct {
 		id     string
@@ -146,28 +146,31 @@ func (s *Server) probeMatch(relatesTo string) string {
 	}
 	var devices []vdev
 	for _, dev := range s.up.Registry.Snapshot() {
-		for _, ch := range dev.Channels {
-			name := ch.Name
-			if name == "" {
-				name = ch.DeviceID
-			}
-			if s.store.Root().Uplevel.IsInfraredChannel(ch.DeviceID, name) {
-				name += " infrared"
-			}
-			devices = append(devices, vdev{
-				id:     ch.DeviceID,
-				name:   name,
-				xaddr:  s.serviceURL(ch.DeviceID),
-				online: ch.Status == "ON",
-			})
+		if len(dev.Channels) == 0 {
+			continue
 		}
+		name := dev.DeviceID
+		if dev.Info != nil && dev.Info.DeviceName != "" {
+			name = dev.Info.DeviceName
+		} else if dev.Channels[0].Name != "" {
+			name = dev.Channels[0].Name
+		}
+		if dev.Infrared {
+			name += " infrared"
+		}
+		devices = append(devices, vdev{
+			id:     dev.DeviceID,
+			name:   name,
+			xaddr:  s.serviceURL(dev.DeviceID),
+			online: dev.Online,
+		})
 	}
 	if len(devices) == 0 {
 		// 目录未就绪时也给出服务根入口，避免客户端空手而归。
 		return s.singleProbeMatch(relatesTo, "adapter", s.baseURL()+"/onvif/device_list")
 	}
 	var entries strings.Builder
-	for i, d := range devices {
+	for _, d := range devices {
 		scopes := []string{
 			"onvif://www.onvif.org/type/NetworkVideoTransmitter",
 			"onvif://www.onvif.org/type/video_encoder",
@@ -186,9 +189,6 @@ func (s *Server) probeMatch(relatesTo string) string {
 			`<d:XAddrs>%s</d:XAddrs>`+
 			`<d:MetadataVersion>1</d:MetadataVersion>`+
 			`</d:ProbeMatch>`, xmlEscape(d.id), xmlEscape(strings.Join(scopes, " ")), xmlEscape(d.xaddr))
-		if i < len(devices)-1 {
-			entries.WriteString("")
-		}
 	}
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
 		`<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"` +

@@ -76,11 +76,44 @@ func (s *Server) handleDeviceList(w http.ResponseWriter, _ *http.Request) {
 
 // ---- 入口与分发 ----
 
+// svcReq 一次 ONVIF 请求的解析结果：一台虚拟相机（物理设备）及其全部通道。
+// profile_N 按通道顺序映射（profile_1 = 第一通道，通常可见光；红外通道
+// 的 profile 名称带 infrared 后缀）。
+type svcReq struct {
+	id       string                  // 路径 ID（设备编码或通道编码）
+	deviceID string                  // 所属设备编码
+	channels []uplevel.ChannelInfo   // 通道列表（设备模式为全部通道）
+}
+
+// channelByToken 按 ProfileToken（profile_N）解析通道，N 从 1 起。
+func (r svcReq) channelByToken(token string) (uplevel.ChannelInfo, bool) {
+	var n int
+	if _, err := fmt.Sscanf(strings.TrimSpace(token), "profile_%d", &n); err != nil || n < 1 || n > len(r.channels) {
+		if len(r.channels) > 0 {
+			return r.channels[0], true // 未带 token 时默认第一通道
+		}
+		return uplevel.ChannelInfo{}, false
+	}
+	return r.channels[n-1], true
+}
+
+// resolveReq 解析路径 ID：优先按设备（一台相机多 profile），其次按通道（兼容）。
+func (s *Server) resolveReq(id string) (svcReq, bool) {
+	if dev, ok := s.up.Registry.Find(id); ok && len(dev.Channels) > 0 {
+		return svcReq{id: id, deviceID: dev.DeviceID, channels: dev.Channels}, true
+	}
+	if _, ch, ok := s.up.Registry.FindByChannel(id); ok {
+		return svcReq{id: id, deviceID: ch.DeviceID, channels: []uplevel.ChannelInfo{ch}}, true
+	}
+	return svcReq{}, false
+}
+
 // handleDeviceService 解析 SOAP 请求体，按 Body 首子元素分发到对应服务。
 func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
-	channelID := r.PathValue("channel")
-	if !s.validChannel(channelID) {
-		writeSOAPFault(w, "unknown channel "+channelID)
+	id := r.PathValue("channel")
+	req, ok := s.resolveReq(id)
+	if !ok {
+		writeSOAPFault(w, "unknown device or channel "+id)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -89,68 +122,55 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, payload := parseSOAPAction(string(body))
-	s.logger.Debug("onvif request", "channel", channelID, "action", action)
+	s.logger.Debug("onvif request", "id", id, "action", action, "channels", len(req.channels))
 
 	var resp string
 	switch action {
 	case "GetSystemDateAndTime":
 		resp = respGetSystemDateAndTime
 	case "GetDeviceInformation":
-		resp = s.respGetDeviceInformation(channelID)
+		resp = s.respGetDeviceInformation(req)
 	case "GetCapabilities":
-		resp = s.respGetCapabilities(channelID)
+		resp = s.respGetCapabilities(req)
 	case "GetServices":
-		resp = s.respGetServices(channelID)
+		resp = s.respGetServices(req)
 	case "GetProfiles", "GetProfile":
-		resp = s.respGetProfiles(channelID)
+		resp = s.respGetProfiles(req)
 	case "GetStreamUri":
 		// 模式决策：direct 模板可用且相机可达 → 直通地址（无需点播）；
 		// 否则网关模式：自动发起 GB 点播（外部程序无需任何手动操作）。
-		gatewayURL := s.streamURL(channelID)
-		up := s.store.Root().Uplevel
-		if _, dev, ok := s.channelInfo(channelID); ok {
-			if url, direct := uplevel.ResolveStreamURL(up, dev.RemoteIP, channelID, gatewayURL); direct {
-				s.logger.Info("onvif stream direct to camera", "channel", channelID, "uri", url)
-				resp = soapEnvelope(fmt.Sprintf(`
-<trt:GetStreamUriResponse>
-  <trt:MediaUri>
-    <tt:Uri>%s</tt:Uri>
-    <tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
-    <tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>
-    <tt:TimeToLive>86400</tt:TimeToLive>
-  </trt:MediaUri>
-</trt:GetStreamUriResponse>`, xmlEscape(url)))
-				break
-			}
+		token := soapQuery(payload, "ProfileToken")
+		ch, ok := req.channelByToken(token)
+		if !ok {
+			writeSOAPFault(w, "unknown profile token "+token)
+			return
 		}
-		go func() {
-			ctx, cancel := contextTimeout(20 * time.Second)
-			defer cancel()
-			if _, err := s.up.Play(ctx, channelID); err != nil {
-				s.logger.Warn("onvif autoplay failed", "channel", channelID, "err", err.Error())
-			}
-		}()
-		resp = s.respGetStreamUri(channelID)
+		resp = s.streamURIResponse(req, ch)
 	case "GetSnapshotUri":
-		resp = s.respGetSnapshotUri(channelID)
+		token := soapQuery(payload, "ProfileToken")
+		if _, ok := req.channelByToken(token); !ok {
+			writeSOAPFault(w, "unknown profile token "+token)
+			return
+		}
+		resp = s.respGetSnapshotUri(req)
 	case "GetVideoEncoderConfigurations", "GetVideoEncoderConfiguration",
 		"GetVideoSourceConfigurations", "GetVideoSourceConfiguration",
 		"GetVideoEncoderConfigurationOptions":
-		resp = s.respVideoConfigs(channelID)
+		resp = s.respVideoConfigs(req)
 	case "ContinuousMove":
-		resp = s.handleContinuousMove(channelID, payload)
+		resp = s.handleContinuousMove(req, payload)
 	case "AbsoluteMove", "RelativeMove":
 		// 国标 A50F 云台指令无绝对/相对定位，确认收到（不产生运动）。
-		s.logger.Debug("onvif ptz absolute/relative move acknowledged (unsupported)", "channel", channelID)
+		s.logger.Debug("onvif ptz absolute/relative move acknowledged (unsupported)", "id", id)
 		resp = soapEnvelope(`<tptz:MoveResponse/>`)
 	case "Stop":
-		resp = s.handlePTZStop(channelID, payload)
+		resp = s.handlePTZStop(req, payload)
 	case "GetStatus":
 		resp = respPTZStatus
 	case "GetNodes":
-		resp = s.respPTZNodes(channelID)
+		resp = s.respPTZNodes(req)
 	case "GetConfigurations", "GetPTZConfigurations":
-		resp = s.respPTZConfigurations(channelID)
+		resp = s.respPTZConfigurations(req)
 	case "GetServiceCapabilities":
 		resp = respPTZServiceCapabilities
 	default:
@@ -160,6 +180,43 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 	resp = finalizePlaceholders(resp)
 	w.Header().Set("Content-Type", `application/soap+xml; charset=utf-8`)
 	_, _ = w.Write([]byte(resp))
+}
+
+// streamURIResponse 生成 GetStreamUri 应答（含直通/中转模式决策）。
+func (s *Server) streamURIResponse(req svcReq, ch uplevel.ChannelInfo) string {
+	gatewayURL := s.streamURL(ch.DeviceID)
+	up := s.store.Root().Uplevel
+	if _, dev, ok := s.channelInfo(ch.DeviceID); ok {
+		if url, direct := uplevel.ResolveStreamURL(up, dev.RemoteIP, ch.DeviceID, gatewayURL); direct {
+			s.logger.Info("onvif stream direct to camera", "channel", ch.DeviceID, "uri", url)
+			return soapEnvelope(fmt.Sprintf(`
+<trt:GetStreamUriResponse>
+  <trt:MediaUri>
+    <tt:Uri>%s</tt:Uri>
+    <tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
+    <tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>
+    <tt:TimeToLive>86400</tt:TimeToLive>
+  </trt:MediaUri>
+</trt:GetStreamUriResponse>`, xmlEscape(url)))
+		}
+	}
+	// 网关模式：自动发起 GB 点播。
+	go func() {
+		ctx, cancel := contextTimeout(20 * time.Second)
+		defer cancel()
+		if _, err := s.up.Play(ctx, ch.DeviceID); err != nil {
+			s.logger.Warn("onvif autoplay failed", "channel", ch.DeviceID, "err", err.Error())
+		}
+	}()
+	return soapEnvelope(fmt.Sprintf(`
+<trt:GetStreamUriResponse>
+  <trt:MediaUri>
+    <tt:Uri>%s</tt:Uri>
+    <tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
+    <tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>
+    <tt:TimeToLive>86400</tt:TimeToLive>
+  </trt:MediaUri>
+</trt:GetStreamUriResponse>`, xmlEscape(gatewayURL)))
 }
 
 // finalizePlaceholders 替换响应里的时间占位符。
