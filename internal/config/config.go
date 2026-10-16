@@ -125,6 +125,28 @@ type Uplevel struct {
 	LocalAddr    string `json:"local_addr"`     // SIP 监听地址，默认 :5060
 	MediaPortMin int    `json:"media_port_min"` // 点播收流 UDP 端口范围下限
 	MediaPortMax int    `json:"media_port_max"` // 点播收流 UDP 端口范围上限
+
+	// StreamMode 对外取流模式：direct=优先直通相机 RTSP（默认，相机不可达
+	// 时自动回退 gateway）；gateway=恒走适配器中转（GB 点播 + 内嵌 RTSP）。
+	StreamMode string `json:"stream_mode"`
+	// CameraRTSPTemplate 相机 RTSP 地址模板（直通模式用），占位符：
+	// {ip}=设备地址、{n}=通道序号。空表示未配置（恒走中转）。
+	// 海康示例：rtsp://admin:密码@{ip}:554/Streaming/Channels/{n}01
+	CameraRTSPTemplate string `json:"camera_rtsp_template"`
+}
+
+// 流模式取值。
+const (
+	StreamModeDirect  = "direct"
+	StreamModeGateway = "gateway"
+)
+
+// EffectiveStreamMode 返回生效的流模式（空/非法值视为 direct 默认）。
+func (u Uplevel) EffectiveStreamMode() string {
+	if u.StreamMode == StreamModeGateway {
+		return StreamModeGateway
+	}
+	return StreamModeDirect
 }
 
 // Realm 返回认证域（取平台编码前 10 位）。

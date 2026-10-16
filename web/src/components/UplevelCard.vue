@@ -23,7 +23,9 @@ const form = reactive({
   local_addr: ':5060',
   password: '',
   media_port_min: 30000,
-  media_port_max: 30499
+  media_port_max: 30499,
+  stream_mode: 'direct',
+  camera_rtsp_template: ''
 })
 
 const rules = {
@@ -70,6 +72,8 @@ async function load() {
       form.local_addr = u.local_addr || ':5060'
       form.media_port_min = u.media_port_min || 30000
       form.media_port_max = u.media_port_max || 30499
+      form.stream_mode = u.stream_mode || 'direct'
+      form.camera_rtsp_template = u.camera_rtsp_template || ''
     }
   } catch (e) {
     ElMessage.error(e.message)
@@ -102,7 +106,9 @@ async function save() {
       server_id: form.server_id,
       local_addr: form.local_addr,
       media_port_min: Number(form.media_port_min),
-      media_port_max: Number(form.media_port_max)
+      media_port_max: Number(form.media_port_max),
+      stream_mode: form.stream_mode,
+      camera_rtsp_template: form.camera_rtsp_template
     }
     if (form.password) body.password = form.password
     await updateUplevel(body)
@@ -226,6 +232,24 @@ function onSnapError() {
         <el-col :span="8">
           <el-form-item>
             <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <el-form-item label="取流模式">
+            <el-radio-group v-model="form.stream_mode">
+              <el-radio value="direct">相机直通（优先，不可达自动中转）</el-radio>
+              <el-radio value="gateway">适配器中转</el-radio>
+            </el-radio-group>
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16">
+        <el-col :span="16">
+          <el-form-item label="相机RTSP模板">
+            <el-input v-model="form.camera_rtsp_template"
+              placeholder="直通模式地址模板，如 rtsp://admin:密码@{ip}:554/Streaming/Channels/{n}01（留空恒走中转）" />
           </el-form-item>
         </el-col>
       </el-row>

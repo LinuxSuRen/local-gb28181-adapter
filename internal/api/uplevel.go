@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/linuxsuren/local-gb28181-adapter/internal/config"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/uplevel"
 )
 
 // uplevel 查询与点播的超时。
@@ -30,6 +31,8 @@ func (s *Server) handleGetUplevel(w http.ResponseWriter, _ *http.Request) {
 		"media_port_min": u.MediaPortMin,
 		"media_port_max": u.MediaPortMax,
 		"password_set":   u.Password != "",
+		"stream_mode":    u.EffectiveStreamMode(),
+		"camera_rtsp_template": u.CameraRTSPTemplate,
 		"running":        s.uplevel.Running(),
 		"listen_port":    s.uplevel.LocalPort(),
 	})
@@ -42,6 +45,8 @@ type uplevelInput struct {
 	LocalAddr    *string `json:"local_addr"`
 	MediaPortMin *int    `json:"media_port_min"`
 	MediaPortMax *int    `json:"media_port_max"`
+	StreamMode         *string `json:"stream_mode"`
+	CameraRTSPTemplate *string `json:"camera_rtsp_template"`
 }
 
 func (in *uplevelInput) validate() error {
@@ -61,6 +66,10 @@ func (in *uplevelInput) validate() error {
 	}
 	if in.MediaPortMin != nil && in.MediaPortMax != nil && *in.MediaPortMin > *in.MediaPortMax {
 		return badRequest("收流端口下限不能大于上限")
+	}
+	if in.StreamMode != nil && *in.StreamMode != "" &&
+		*in.StreamMode != config.StreamModeDirect && *in.StreamMode != config.StreamModeGateway {
+		return badRequest("取流模式只支持 direct（相机直通）或 gateway（适配器中转）")
 	}
 	return nil
 }
@@ -84,6 +93,12 @@ func applyUplevelInput(u *config.Uplevel, in *uplevelInput) error {
 	}
 	if in.MediaPortMax != nil {
 		u.MediaPortMax = *in.MediaPortMax
+	}
+	if in.StreamMode != nil {
+		u.StreamMode = *in.StreamMode
+	}
+	if in.CameraRTSPTemplate != nil {
+		u.CameraRTSPTemplate = strings.TrimSpace(*in.CameraRTSPTemplate)
 	}
 	return nil
 }
@@ -190,9 +205,19 @@ func (s *Server) handleUplevelPTZ(w http.ResponseWriter, r *http.Request) {
 
 // ---- 快照 ----
 
-// handleUplevelSnapshot 从点播转发的 RTSP 流抓一帧 JPEG（需先点播）。
+// handleUplevelSnapshot 抓一帧 JPEG：
+// direct 模式（模板可用且相机可达）优先从相机 RTSP 直连抓取，无需点播；
+// 否则要求通道点播中，从内嵌 RTSP 抓取。
 func (s *Server) handleUplevelSnapshot(w http.ResponseWriter, r *http.Request) {
 	channelID := r.PathValue("id")
+	up := s.store.Root().Uplevel
+	// 直通优先。
+	if dev, _, ok := lookupChannel(s.uplevel, channelID); ok {
+		if url, direct := uplevel.ResolveStreamURL(up, dev.RemoteIP, channelID, ""); direct {
+			s.writeStreamSnapshot(w, "gb-"+channelID, url)
+			return
+		}
+	}
 	playing := false
 	for _, sess := range s.uplevel.Sessions() {
 		if sess.ChannelID == channelID {
@@ -208,8 +233,14 @@ func (s *Server) handleUplevelSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "no_rtsp", "RTSP 服务未启用")
 		return
 	}
-	data, err := s.snaps.JPEGFromStream("gb-"+channelID, s.gbStreamURL(channelID))
+	s.writeStreamSnapshot(w, "gb-"+channelID, s.gbStreamURL(channelID))
+}
+
+// writeStreamSnapshot 从 RTSP 流抓帧并输出 JPEG。
+func (s *Server) writeStreamSnapshot(w http.ResponseWriter, key, rtspURL string) {
+	data, err := s.snaps.JPEGFromStream(key, rtspURL)
 	if err != nil {
+		s.logger.Warn("snapshot failed", "key", key, "url", rtspURL, "err", err.Error())
 		writeError(w, http.StatusBadGateway, "snapshot_failed",
 			"抓取画面失败："+err.Error())
 		return
@@ -218,6 +249,11 @@ func (s *Server) handleUplevelSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// lookupChannel 在上级平台注册表中查找通道。
+func lookupChannel(u *uplevel.Service, channelID string) (uplevel.Device, uplevel.ChannelInfo, bool) {
+	return u.Registry.FindByChannel(channelID)
 }
 
 // gbStreamURL 通道对应的内嵌 RTSP 流地址。

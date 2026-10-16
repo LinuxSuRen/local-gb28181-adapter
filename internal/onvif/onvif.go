@@ -18,7 +18,6 @@ import (
 	"github.com/linuxsuren/local-gb28181-adapter/internal/config"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/uplevel"
 )
-
 // Server ONVIF 服务。挂载在管理 HTTP 端口上（/onvif/ 前缀），无独立监听。
 type Server struct {
 	store  *config.Store
@@ -105,7 +104,25 @@ func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
 	case "GetProfiles", "GetProfile":
 		resp = s.respGetProfiles(channelID)
 	case "GetStreamUri":
-		// 拉流前自动发起 GB 点播（外部程序无需任何手动操作）。
+		// 模式决策：direct 模板可用且相机可达 → 直通地址（无需点播）；
+		// 否则网关模式：自动发起 GB 点播（外部程序无需任何手动操作）。
+		gatewayURL := s.streamURL(channelID)
+		up := s.store.Root().Uplevel
+		if _, dev, ok := s.channelInfo(channelID); ok {
+			if url, direct := uplevel.ResolveStreamURL(up, dev.RemoteIP, channelID, gatewayURL); direct {
+				s.logger.Info("onvif stream direct to camera", "channel", channelID, "uri", url)
+				resp = soapEnvelope(fmt.Sprintf(`
+<trt:GetStreamUriResponse>
+  <trt:MediaUri>
+    <tt:Uri>%s</tt:Uri>
+    <tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
+    <tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>
+    <tt:TimeToLive>86400</tt:TimeToLive>
+  </trt:MediaUri>
+</trt:GetStreamUriResponse>`, xmlEscape(url)))
+				break
+			}
+		}
 		go func() {
 			ctx, cancel := contextTimeout(20 * time.Second)
 			defer cancel()
