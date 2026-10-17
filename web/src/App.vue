@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { getSystem, getCameras, getSessions, deleteCamera } from './api'
 import SystemCard from './components/SystemCard.vue'
 import PlatformCard from './components/PlatformCard.vue'
+import UplevelCard from './components/UplevelCard.vue'
 import CameraTable from './components/CameraTable.vue'
 import CameraDialog from './components/CameraDialog.vue'
 import SnapshotDialog from './components/SnapshotDialog.vue'
@@ -87,6 +88,8 @@ async function handleRemove(camera) {
     <SystemCard :system="system" :sessions="sessions" class="block" />
 
     <PlatformCard class="block" @saved="loadAll" />
+
+    <UplevelCard class="block" @saved="loadAll" />
 
     <CameraTable
       class="block"

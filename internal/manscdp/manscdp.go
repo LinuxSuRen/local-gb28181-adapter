@@ -31,23 +31,23 @@ type Channel struct {
 	Manufacturer string `xml:"Manufacturer"`
 	Model        string `xml:"Model"`
 	Owner        string `xml:"Owner"`
-	CivilCode   string `xml:"CivilCode"`
-	Address     string `xml:"Address"`
-	Parental    int    `xml:"Parental"`
-	ParentID    string `xml:"ParentID"`
-	SafetyWay   int    `xml:"SafetyWay"`
-	RegisterWay int    `xml:"RegisterWay"`
-	Secrecy     int    `xml:"Secrecy"`
-	Status      string `xml:"Status"` // ON / OFF
+	CivilCode    string `xml:"CivilCode"`
+	Address      string `xml:"Address"`
+	Parental     int    `xml:"Parental"`
+	ParentID     string `xml:"ParentID"`
+	SafetyWay    int    `xml:"SafetyWay"`
+	RegisterWay  int    `xml:"RegisterWay"`
+	Secrecy      int    `xml:"Secrecy"`
+	Status       string `xml:"Status"` // ON / OFF
 }
 
 // CatalogResponse 目录查询应答。
 type CatalogResponse struct {
-	XMLName    xml.Name  `xml:"Response"`
-	CmdType    string    `xml:"CmdType"`
-	SN         int       `xml:"SN"`
-	DeviceID   string    `xml:"DeviceID"`
-	SumNum     int       `xml:"SumNum"`
+	XMLName    xml.Name   `xml:"Response"`
+	CmdType    string     `xml:"CmdType"`
+	SN         int        `xml:"SN"`
+	DeviceID   string     `xml:"DeviceID"`
+	SumNum     int        `xml:"SumNum"`
 	DeviceList DeviceList `xml:"DeviceList"`
 }
 
@@ -129,6 +129,67 @@ func BuildDeviceInfo(sn int, deviceID, name, manufacturer, model, firmware strin
 		Result:       "OK",
 	}
 	return marshal(resp)
+}
+
+// QueryBody 平台 → 设备的查询消息载体（Query 根元素）。
+type QueryBody struct {
+	XMLName  xml.Name `xml:"Query"`
+	CmdType  string   `xml:"CmdType"`
+	SN       int      `xml:"SN"`
+	DeviceID string   `xml:"DeviceID"`
+}
+
+// ControlBody 平台 → 设备的控制消息载体（Control 根元素）。
+type ControlBody struct {
+	XMLName  xml.Name  `xml:"Control"`
+	CmdType  string    `xml:"CmdType"`
+	SN       int       `xml:"SN"`
+	DeviceID string    `xml:"DeviceID"`
+	PTZCmd   string    `xml:"PTZCmd"`
+	Info     *CtrlInfo `xml:"Info,omitempty"`
+}
+
+// BuildQuery 构造平台下发的查询消息（Catalog / DeviceInfo 等）。
+func BuildQuery(cmdType string, sn int, deviceID string) string {
+	return marshal(QueryBody{CmdType: cmdType, SN: sn, DeviceID: deviceID})
+}
+
+// BuildDeviceControlPTZ 构造平台下发的云台控制消息。
+func BuildDeviceControlPTZ(sn int, channelID, ptzCmdHex string) string {
+	return marshal(ControlBody{
+		CmdType:  "DeviceControl",
+		SN:       sn,
+		DeviceID: channelID,
+		PTZCmd:   ptzCmdHex,
+		Info:     &CtrlInfo{ControlPriority: 1},
+	})
+}
+
+// ParseCatalogResponse 解析设备上报的目录应答。
+func ParseCatalogResponse(body []byte) (CatalogResponse, error) {
+	var r CatalogResponse
+	if err := xml.Unmarshal(body, &r); err != nil {
+		return r, fmt.Errorf("parse catalog response: %w", err)
+	}
+	return r, nil
+}
+
+// ParseDeviceInfoResponse 解析设备上报的设备信息应答。
+func ParseDeviceInfoResponse(body []byte) (DeviceInfoResponse, error) {
+	var r DeviceInfoResponse
+	if err := xml.Unmarshal(body, &r); err != nil {
+		return r, fmt.Errorf("parse deviceinfo response: %w", err)
+	}
+	return r, nil
+}
+
+// ParseKeepalive 解析心跳上报。
+func ParseKeepalive(body []byte) (Keepalive, error) {
+	var k Keepalive
+	if err := xml.Unmarshal(body, &k); err != nil {
+		return k, fmt.Errorf("parse keepalive: %w", err)
+	}
+	return k, nil
 }
 
 func marshal(v any) string {

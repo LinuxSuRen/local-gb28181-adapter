@@ -106,3 +106,51 @@ export function snapshotUrl(id) {
 export function listDevices() {
   return request('/api/devices')
 }
+
+// ---- 国标上级平台（下级设备接入） ----
+
+export function getUplevel() {
+  return request('/api/uplevel')
+}
+
+export function updateUplevel(uplevel) {
+  return request('/api/uplevel', { method: 'PUT', body: uplevel })
+}
+
+export function getUplevelDevices() {
+  return request('/api/uplevel/devices')
+}
+
+export function queryUplevelDevice(id) {
+  return request(`/api/uplevel/devices/${encodeURIComponent(id)}/query`, { method: 'POST' })
+}
+
+export function playUplevelChannel(id) {
+  return request(`/api/uplevel/channels/${encodeURIComponent(id)}/play`, { method: 'POST' })
+}
+
+export function stopUplevelChannel(id) {
+  return request(`/api/uplevel/channels/${encodeURIComponent(id)}/play`, { method: 'DELETE' })
+}
+
+export function getUplevelSessions() {
+  return request('/api/uplevel/sessions')
+}
+
+export function sendUplevelPtz(id, action, speed) {
+  return request(`/api/uplevel/channels/${encodeURIComponent(id)}/ptz`, {
+    method: 'POST',
+    body: { action, speed }
+  })
+}
+
+export function uplevelSnapshotUrl(id) {
+  return `/api/uplevel/channels/${encodeURIComponent(id)}/snapshot?t=${Date.now()}`
+}
+
+export function setChannelInfrared(id, enabled) {
+  return request(`/api/uplevel/channels/${encodeURIComponent(id)}/infrared`, {
+    method: 'POST',
+    body: { enabled }
+  })
+}

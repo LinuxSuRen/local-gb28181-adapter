@@ -13,6 +13,7 @@ import (
 	"github.com/linuxsuren/local-gb28181-adapter/internal/sig"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/snapshot"
 	"github.com/linuxsuren/local-gb28181-adapter/internal/stream"
+	"github.com/linuxsuren/local-gb28181-adapter/internal/uplevel"
 )
 
 func newTestServer(t *testing.T) (*Server, *httptest.Server) {
@@ -24,7 +25,8 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	gb := sig.New(store, ptzmock.NewRegistry(), nil, nil, slog.Default())
 	srv := NewServer(store, ptzmock.NewRegistry(),
 		stream.NewManager("rtsp://127.0.0.1:8554", "ffmpeg", slog.Default()),
-		snapshot.New("ffmpeg", slog.Default()), gb, "test", slog.Default())
+		snapshot.New("ffmpeg", slog.Default()), gb, uplevel.New(store, nil, slog.Default()),
+		"test", slog.Default())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return srv, ts
